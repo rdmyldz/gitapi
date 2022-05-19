@@ -38,28 +38,6 @@ func Test_getFilename(t *testing.T) {
 	}
 }
 
-func Test_getDirName(t *testing.T) {
-
-	tests := []struct {
-		name string
-		link string
-		want string
-	}{
-		{
-			name: "valid link",
-			link: "https://api.github.com/repos/rdmyldz/i2t/contents/tesseract/testdata",
-			want: "testdata",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := getDirName(tt.link); got != tt.want {
-				t.Errorf("getDirName() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func Test_getApiLink(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -92,6 +70,32 @@ func Test_getApiLink(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("getApiLink() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_getRootDir(t *testing.T) {
+	type args struct {
+		cPath   string
+		cName   string
+		rootDir string
+	}
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "1st case",
+			args: args{cPath: "tesseract/example/cli", cName: "cli", rootDir: "example"},
+			want: "example/cli",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getRootDir(tt.args.cPath, tt.args.cName, tt.args.rootDir); got != tt.want {
+				t.Errorf("getRootDir() = %v, want %v", got, tt.want)
 			}
 		})
 	}

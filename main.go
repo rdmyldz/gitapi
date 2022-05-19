@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -13,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 var ErrInvalidURL = errors.New("invalid url")
@@ -24,15 +24,15 @@ const (
 )
 
 type Content struct {
+	Path        string `json:"path"`
 	Name        string `json:"name"`
 	Size        int    `json:"size"`
+	URL         string `json:"url"`
 	DownloadURL string `json:"download_url"`
 	Type        string `json:"type"`
 }
-
-type gitapi struct {
-	dirname  string
-	Contents []Content
+type gitAPI struct {
+	err error
 }
 
 func main() {
@@ -46,69 +46,104 @@ func main() {
 		log.Fatal(err)
 	}
 
-	g := gitapi{
-		dirname: getDirName(htmlLink),
+	rootDir := filepath.Base(htmlLink)
+	err = os.MkdirAll(rootDir, os.ModePerm)
+	if err != nil {
+		log.Fatalf("error creating dir: %v\n", err)
 	}
-	err = createDirIfNotExist(g.dirname)
+
+	contents, err := getContent(apiLink)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	b, err := downloadContent(apiLink)
+	app := &gitAPI{}
+
+	var wg sync.WaitGroup
+	err = app.walk(&wg, contents, rootDir)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	err = json.Unmarshal(b, &g.Contents)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, content := range g.Contents {
-		fmt.Printf("name: %q, size: %d, url: %q, type: %q\n", content.Name, content.Size, content.DownloadURL, content.Type)
-		if content.Type != "file" {
-			continue
-		}
-		g.downloadFiles(content.DownloadURL)
-	}
+	wg.Wait()
 
 }
 
-func downloadContent(link string) ([]byte, error) {
+func (g *gitAPI) walk(wg *sync.WaitGroup, contents []Content, rootDir string) error {
+	if g.err != nil {
+		return g.err
+	}
+
+	for _, content := range contents {
+		if content.Type == "dir" {
+			rootDir := getRootDir(content.Path, content.Name, rootDir)
+			err := os.MkdirAll(rootDir, os.ModePerm)
+			if err != nil {
+				g.err = fmt.Errorf("error creating dir: %w", err)
+				return g.err
+			}
+
+			newContents, err := getContent(content.URL)
+			if err != nil {
+				g.err = fmt.Errorf("error getContent: %w", err)
+				return g.err
+			}
+
+			g.walk(wg, newContents, rootDir)
+			continue
+		}
+		wg.Add(1)
+		go g.downloadFiles(wg, content, rootDir)
+	}
+
+	return nil
+}
+
+func getContent(link string) ([]Content, error) {
 	resp, err := http.Get(link)
-	if err != nil {
+	if err != nil && resp.StatusCode != http.StatusOK {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	return io.ReadAll(resp.Body)
-}
-
-func (a *gitapi) downloadFiles(link string) error {
-	filename, err := getFilename(link)
+	var c []Content
+	err = json.NewDecoder(resp.Body).Decode(&c)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("link: %q\nerr: %w", link, err)
 	}
 
-	filePath := filepath.Join(a.dirname, filename)
+	return c, nil
+}
 
-	resp, err := http.Get(link)
+func (g *gitAPI) downloadFiles(wg *sync.WaitGroup, content Content, rootDir string) error {
+	defer wg.Done()
+	resp, err := http.Get(content.DownloadURL)
 	if err != nil {
-		return err
+		g.err = fmt.Errorf("error http get: %w", err)
+		return g.err
 	}
 	defer resp.Body.Close()
 
-	f, err := os.Create(filePath)
+	fPath := getRootDir(content.Path, content.Name, rootDir)
+	f, err := os.Create(fPath)
 	if err != nil {
-		return err
+		g.err = fmt.Errorf("error creating: %w", err)
+		return g.err
 	}
 
 	_, err = io.Copy(f, resp.Body)
 	if err != nil {
-		return err
+		g.err = fmt.Errorf("error copy: %w", err)
+		return g.err
 	}
 
 	return nil
+}
+
+func getRootDir(cPath, cName, rootDir string) string {
+	rootDir = filepath.Join(rootDir, cName)
+	splitted := strings.Split(cPath, rootDir)
+	splitted[0] = rootDir
+	return filepath.Join(splitted...)
 }
 
 func getApiLink(link string) (string, error) {
@@ -127,10 +162,6 @@ func getApiLink(link string) (string, error) {
 	return apiLinkPrefix + path.Join(repo, contents, dirname) + "?ref=" + branchName, nil
 }
 
-func getDirName(link string) string {
-	return filepath.Base(link)
-}
-
 // getFilename returns utf8 filename to save
 // since the link may contain escaped characters
 func getFilename(link string) (string, error) {
@@ -139,15 +170,4 @@ func getFilename(link string) (string, error) {
 		return "", err
 	}
 	return path.Base(unescaped), nil
-}
-
-func createDirIfNotExist(p string) error {
-	_, err := os.Stat(p)
-	if errors.Is(err, fs.ErrNotExist) {
-		err = os.Mkdir(p, 0755)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
